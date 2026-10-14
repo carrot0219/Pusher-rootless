@@ -82,7 +82,18 @@ static BOOL PusherIsBundle(NSString *bundleID) {
 %end
 %end // %group iOS10And11
 
-%group iOS12
+// iOS 12 and later all publish through `-publishBulletin:destinations:`, whose
+// argument is the real, unpacked `BBBulletin`: `title` / `subtitle` / `message`
+// read straight off it.
+//
+// iOS 13+ also exposes a private `-publishBulletinRequest:destinations:`, and
+// this hook used to target exactly that. Its argument is a `BBBulletinRequest`
+// wrapper, and on iOS 17 the wrapper carries only the title — `message` and
+// `subtitle` live on the bulletin it wraps — so reading the request layer gave
+// an empty body: the "title but no content" symptom. `publishBulletin:` is the
+// method `BBServer.h` actually declares, it fires for the same bulletins, and
+// it hands over the unpacked one, so the body survives through iOS 17.
+%group iOS12AndLater
 %hook BBServer
 - (void)publishBulletin:(BBBulletin *)bulletin
            destinations:(unsigned long long)destinations {
@@ -92,19 +103,7 @@ static BOOL PusherIsBundle(NSString *bundleID) {
   }
 }
 %end
-%end // %group iOS12
-
-%group iOS13AndLater
-%hook BBServer
-- (void)publishBulletinRequest:(BBBulletin *)bulletin
-                  destinations:(unsigned long long)destinations {
-  %orig;
-  if ([self respondsToSelector:@selector(sendBulletinToPusher:)]) {
-    [self sendBulletinToPusher:bulletin];
-  }
-}
-%end
-%end // %group iOS13AndLater
+%end // %group iOS12AndLater
 
 // MARK: - Entry point
 
@@ -112,10 +111,8 @@ static BOOL PusherIsBundle(NSString *bundleID) {
   if (PusherIsBundle(@"com.apple.springboard")) {
     if ([[UIDevice currentDevice].systemVersion compare:@"12.0" options:NSNumericSearch] == NSOrderedAscending) {
       %init(iOS10And11);
-    } else if ([[UIDevice currentDevice].systemVersion compare:@"13.0" options:NSNumericSearch] == NSOrderedAscending) {
-      %init(iOS12);
     } else {
-      %init(iOS13AndLater);
+      %init(iOS12AndLater);
     }
 
     // Prime the config before the first bulletin arrives, then keep it fresh.
