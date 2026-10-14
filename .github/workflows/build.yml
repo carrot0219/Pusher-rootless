@@ -2,16 +2,12 @@ name: Release
 
 on:
   release:
-    # `published`, not `created`. The `created` action fires when a *draft* is
-    # saved; a release made straight to published — which is what `gh release
-    # create` does, and what the web form does unless a draft is saved first —
-    # only fires `published`. Listening for `created` alone is why the 3.0.0 beta
-    # release produced no build.
     types:
-      - published
-  # So a workflow edit can be tried without cutting a release to try it with.
-  # The build runs; the upload step is skipped because there is no tag.
+      - created
   workflow_dispatch:
+  push:
+    branches:
+      - master
 
 jobs:
   build:
@@ -19,18 +15,18 @@ jobs:
 
     steps:
 
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
 
     - name: Check cache
       id: verify-cache
-      # `::set-output` was retired in 2023; the replacement is a line on stdout
-      # written to the file named by $GITHUB_OUTPUT.
       run: |
-        echo "heads=`git ls-remote https://github.com/roothide/theos | head -n 1 | cut -f 1`-`git ls-remote https://github.com/xybp888/iOS-SDKs | head -n 1 | cut -f 1`" >> $GITHUB_OUTPUT
+        echo "::set-output name=heads::`git ls-remote https://github.com/roothide/theos | head -n 1 | cut -f 1`-`git ls-remote https://github.com/xybp888/iOS-SDKs | head -n 1 | cut -f 1`"
 
     - name: Use cache
       id: cache
-      uses: actions/cache@v5
+      uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/theos
         key: ${{ runner.os }}-${{ steps.verify-cache.outputs.heads }}
@@ -39,23 +35,6 @@ jobs:
       uses: NyaMisty/theos-action@master
       with: 
         theos-src: https://github.com/roothide/theos
-
-    # Parallel builds. Theos checks the make version and warns when it is Apple's
-    # 3.81, which cannot run jobs in parallel; on a project this size that is the
-    # difference between five minutes and two per scheme.
-    #
-    # The action above tries to do this itself and fails twice over: it writes
-    # `PATH="…" >> $GITHUB_ENV`, and `$GITHUB_ENV` needs a bare `NAME=VALUE`, so
-    # the quotes end up inside the variable name and nothing is set; and the path
-    # it names is `/usr/local/opt/…`, Homebrew's Intel prefix, while `macos-latest`
-    # is arm64 and puts it under `/opt/homebrew`.
-    #
-    # `brew --prefix make` rather than either literal, so this does not depend on
-    # which prefix the runner uses.
-    - name: Use GNU make
-      run: |
-        brew install make
-        echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
 
     - name: Prepare AltList
       run: |
@@ -74,25 +53,32 @@ jobs:
         cp -R ./.theos/obj/AltList.framework $THEOS/lib/iphone/roothide/
         cd ..
 
+    - name: Patch PSSpecifier (idempotent)
+      run: |
+        grep -q "SEL setter;" $THEOS/vendor/include/Preferences/PSSpecifier.h \
+          || sed -i '' 's/SEL action;/SEL action;\n\tSEL setter;\n\tSEL getter;/' $THEOS/vendor/include/Preferences/PSSpecifier.h
+
     - name: remove old package
       run: |
         rm -rf packages
 
-    # `<scheme> make clean` rather than `make clean`: the clean target itself
-    # depends on the scheme, and cleaning without one leaves the previous
-    # scheme's staged files in place.
     - name: Build package - rootless
       run: |
-        THEOS_PACKAGE_SCHEME=rootless make clean
-        THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 make package
+        make clean && THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 make package
 
     - name: Build package - roothide
       run: |
-        THEOS_PACKAGE_SCHEME=roothide make clean
-        THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 make package
+        make clean && THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 make package
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pusher-packages
+        path: ${{ github.workspace }}/packages/*.deb
+        if-no-files-found: error
 
     - name: Release
-      uses: softprops/action-gh-release@v3
+      uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: ${{ github.workspace }}/packages/*.deb
