@@ -8,7 +8,7 @@ FINALPACKAGE = 1
 # paths, which no supported device uses, and it fails in a way that looks like a
 # code error rather than a missing argument.
 #
-   make package THEOS_PACKAGE_SCHEME=roothide    # roothide / Dopamine
+#   make package THEOS_PACKAGE_SCHEME=roothide    # roothide / Dopamine
 #   make package THEOS_PACKAGE_SCHEME=rootless    # rootless (elsewhere)
 #
 # Both use the 16.5 SDK: the deployment target is iOS 15, since neither layout
