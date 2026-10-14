@@ -119,9 +119,20 @@ public final class BulletinAdapter: NSObject {
         context.date = bulletin.date ?? Date()
         context.isTest = isTest
 
-        context.title = bulletin.title
-        context.subtitle = bulletin.subtitle
-        context.message = bulletin.message
+        // iOS 17：`publishBulletinRequest:` 传进来的其实是 `BBBulletinRequest`，
+        // 请求层只保留标题，正文 `message`（连同 `subtitle`）只存在于它内部包裹的
+        // `bulletin`、或更深的 `content` 子对象里，直接读请求层会得到 nil ——
+        // 表现为"只有标题、没有内容"。逐字段按 请求层 → 内部 bulletin → content
+        // 回退取值；旧系统请求层即命中，回退链不改变其行为。
+        let sources = Self.contentSources(bulletin)
+        let title = Self.resolveString("title", sources)
+        let subtitle = Self.resolveString("subtitle", sources)
+        let message = Self.resolveString("message", sources)
+        let showsSubtitle = Self.resolveShowsSubtitle(bulletin, requestMessage: bulletin.message)
+
+        context.title = title
+        context.subtitle = subtitle
+        context.message = message
         context.appName = appName ?? Self.appName(forBundleID: appID)
 
         if let displayTitle, let displayMessage {
@@ -129,11 +140,11 @@ public final class BulletinAdapter: NSObject {
             context.displayTitle = displayTitle
             context.displayMessage = displayMessage
         } else {
-            context.displayTitle = Self.displayTitle(appName: context.appName, title: bulletin.title)
+            context.displayTitle = Self.displayTitle(appName: context.appName, title: title)
             context.displayMessage = Self.displayMessage(
-                subtitle: bulletin.subtitle,
-                message: bulletin.message,
-                showsSubtitle: bulletin.showsSubtitle
+                subtitle: subtitle,
+                message: message,
+                showsSubtitle: showsSubtitle
             )
         }
 
@@ -164,6 +175,50 @@ public final class BulletinAdapter: NSObject {
         }
         context.notificationSettings = Self.settings(from: sectionInfo)
         return context
+    }
+
+    /// 逐字段回退时依次尝试的对象：请求层本身 → 内部包裹的 `bulletin` →
+    /// 各自的 `content`(`BBContent`)。
+    ///
+    /// iOS 13+ 的 `publishBulletinRequest:` 传入的是 `BBBulletinRequest`
+    /// (`BBBulletin` 的子类)，真正的通知内容在它内部的 `bulletin` 上；iOS 17
+    /// 起请求层不再转发正文，只能往里层取。`content` 是最后一道回退：部分通知
+    /// 把正文只存放在 `BBContent` 子对象里。旧系统请求层即命中，多出来的候选
+    /// 不会被用到。
+    private static func contentSources(_ bulletin: BBBulletin) -> [AnyObject] {
+        var objects: [AnyObject] = [bulletin]
+        if let inner = Runtime.send(bulletin, "bulletin") {
+            objects.append(inner)
+        }
+        var sources = objects
+        for object in objects {
+            if let content = Runtime.send(object, "content") {
+                sources.append(content)
+            }
+        }
+        return sources
+    }
+
+    /// 依次从候选对象读取 `key`（`title`/`subtitle`/`message` 的 getter），返回
+    /// 第一个非空字符串。selector 不存在、值缺失或为空都安全跳过。
+    private static func resolveString(_ key: String, _ sources: [AnyObject]) -> String? {
+        for source in sources {
+            if let value = Runtime.send(source, key) as? String, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// `showsSubtitle` 门控着组合消息里的 subtitle，iOS 17 的请求层这个值同样
+    /// 不可信：当请求层正文为空（说明请求层数据不完整）时改从内部 bulletin 读，
+    /// 否则 `displayMessage` 会因请求层默认的 `false` 把正文一并丢掉。
+    private static func resolveShowsSubtitle(_ bulletin: BBBulletin, requestMessage: String?) -> Bool {
+        guard (requestMessage ?? "").isEmpty,
+              let inner = Runtime.send(bulletin, "bulletin") else {
+            return bulletin.showsSubtitle
+        }
+        return Runtime.sendBool(inner, "showsSubtitle")
     }
 
     /// Reduces a `BBSectionInfo` to the filter's value type.
