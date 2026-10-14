@@ -1,5 +1,4 @@
 import Foundation
-import ObjectiveC
 import UIKit
 
 /// SpringBoard objects are reached through ``Runtime`` message sends, not by
@@ -120,16 +119,14 @@ public final class BulletinAdapter: NSObject {
         context.date = bulletin.date ?? Date()
         context.isTest = isTest
 
-        // iOS 17：`publishBulletinRequest:` 传进来的其实是 `BBBulletinRequest`，
-        // 请求层只保留标题，正文 `message`（连同 `subtitle`）只存在于它内部包裹的
-        // `bulletin`、或更深的 `content` 子对象里，直接读请求层会得到 nil ——
-        // 表现为"只有标题、没有内容"。逐字段按 请求层 → 内部 bulletin → content
-        // 回退取值；旧系统请求层即命中，回退链不改变其行为。
-        let sources = Self.contentSources(bulletin)
-        let title = Self.resolveString("title", sources)
-        let subtitle = Self.resolveString("subtitle", sources)
-        let message = Self.resolveString("message", sources)
-        let showsSubtitle = Self.resolveShowsSubtitle(bulletin, requestMessage: bulletin.message)
+        // The hook hands over the real, unpacked `BBBulletin` (it targets
+        // `publishBulletin:destinations:` — see `PusherHooks.xm`), so `title`,
+        // `subtitle` and `message` read straight off it on every version
+        // through iOS 17.
+        let title = bulletin.title
+        let subtitle = bulletin.subtitle
+        let message = bulletin.message
+        let showsSubtitle = bulletin.showsSubtitle
 
         context.title = title
         context.subtitle = subtitle
@@ -176,106 +173,6 @@ public final class BulletinAdapter: NSObject {
         }
         context.notificationSettings = Self.settings(from: sectionInfo)
         return context
-    }
-
-    /// 逐字段回退时依次尝试的对象：请求层本身 → 内部包裹的 `bulletin` →
-    /// 各自的 `content`(`BBContent`)。
-    ///
-    /// iOS 13+ 的 `publishBulletinRequest:` 传入的是 `BBBulletinRequest`
-    /// (`BBBulletin` 的子类)，真正的通知内容在它内部的 `bulletin` 上；iOS 17
-    /// 起请求层不再转发正文，只能往里层取。`content` 是最后一道回退：部分通知
-    /// 把正文只存放在 `BBContent` 子对象里。旧系统请求层即命中，多出来的候选
-    /// 不会被用到。
-    private static func contentSources(_ bulletin: BBBulletin) -> [AnyObject] {
-        var objects: [AnyObject] = [bulletin]
-        if let inner = Runtime.send(bulletin, "bulletin") {
-            objects.append(inner)
-        }
-        var sources = objects
-        for object in objects {
-            if let content = Runtime.send(object, "content") {
-                sources.append(content)
-            }
-        }
-        return sources
-    }
-
-    /// 依次从候选对象读取 `key`（`title`/`subtitle`/`message` 的 getter），返回
-    /// 第一个非空字符串。selector 不存在、值缺失或为空都安全跳过。
-    private static func resolveString(_ key: String, _ sources: [AnyObject]) -> String? {
-        for source in sources {
-            if let value = Runtime.send(source, key) as? String, !value.isEmpty {
-                return value
-            }
-        }
-        return nil
-    }
-
-    /// `showsSubtitle` 门控着组合消息里的 subtitle，iOS 17 的请求层这个值同样
-    /// 不可信：当请求层正文为空（说明请求层数据不完整）时改从内部 bulletin 读，
-    /// 否则 `displayMessage` 会因请求层默认的 `false` 把正文一并丢掉。
-    private static func resolveShowsSubtitle(_ bulletin: BBBulletin, requestMessage: String?) -> Bool {
-        guard (requestMessage ?? "").isEmpty,
-              let inner = Runtime.send(bulletin, "bulletin") else {
-            return bulletin.showsSubtitle
-        }
-        return Runtime.sendBool(inner, "showsSubtitle")
-    }
-
-    // MARK: - TEMP DIAGNOSTIC (remove once the iOS 17 body loss is located)
-
-    /// Dumps the real structure of a bulletin so the property that actually
-    /// holds the body on iOS 17 can be read off the on-device log. Walks the
-    /// class hierarchy and reports every non-empty `NSString` property of the
-    /// request object, its `content`, and its wrapped inner `bulletin` — so the
-    /// body's true key shows up by name instead of by guesswork.
-    public static func diagnose(_ bulletin: BBBulletin) -> String {
-        var lines: [String] = ["root=\(NSStringFromClass(type(of: bulletin)))"]
-        appendStringProperties(bulletin, tag: "root", into: &lines)
-
-        if let content = Runtime.send(bulletin, "content") {
-            lines.append("content=\(NSStringFromClass(type(of: content)))")
-            appendStringProperties(content, tag: "content", into: &lines)
-        } else {
-            lines.append("content=nil")
-        }
-
-        if let inner = Runtime.send(bulletin, "bulletin") {
-            lines.append("inner=\(NSStringFromClass(type(of: inner)))")
-            appendStringProperties(inner, tag: "inner", into: &lines)
-            if let innerContent = Runtime.send(inner, "content") {
-                lines.append("inner.content=\(NSStringFromClass(type(of: innerContent)))")
-                appendStringProperties(innerContent, tag: "inner.content", into: &lines)
-            }
-        } else {
-            lines.append("inner=nil")
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    /// Reports every non-empty string property declared anywhere in the
-    /// object's class hierarchy. Only `T@`-typed (object) properties are read,
-    /// so a scalar getter is never called through an object-returning IMP.
-    private static func appendStringProperties(
-        _ object: AnyObject, tag: String, into lines: inout [String]
-    ) {
-        var cls: AnyClass? = object_getClass(object)
-        while let current = cls, current != NSObject.self {
-            var count: UInt32 = 0
-            if let props = class_copyPropertyList(current, &count) {
-                for index in 0..<Int(count) {
-                    guard let attrs = property_getAttributes(props[index]),
-                          String(cString: attrs).hasPrefix("T@") else { continue }
-                    let name = String(cString: property_getName(props[index]))
-                    guard let value = Runtime.send(object, name) as? String,
-                          !value.isEmpty else { continue }
-                    let shown = value.count > 120 ? String(value.prefix(120)) + "…" : value
-                    lines.append("\(tag).\(name)=\(shown)")
-                }
-                free(props)
-            }
-            cls = class_getSuperclass(current)
-        }
     }
 
     /// Reduces a `BBSectionInfo` to the filter's value type.
@@ -361,9 +258,7 @@ public final class BulletinAdapter: NSObject {
     /// `displayMessageForSubtitle:message:showsSubtitle:`. The Swift rewrite
     /// inverted it into `guard !head.isEmpty else { return head }`, which
     /// returned an empty string whenever there was no subtitle — silently
-    /// dropping the body. An iOS 17 bulletin hits exactly that: its request
-    /// layer keeps the title but not the subtitle, so `head` is empty and the
-    /// message recovered by the fallback chain was thrown away right here.
+    /// dropping the body of every notification that had none.
     static func displayMessage(subtitle: String?, message: String?, showsSubtitle: Bool) -> String {
         let head = (showsSubtitle && !(subtitle ?? "").isEmpty) ? (subtitle ?? "") : ""
         let body = message ?? ""
