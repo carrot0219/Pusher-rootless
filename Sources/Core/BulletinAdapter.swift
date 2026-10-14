@@ -296,12 +296,23 @@ public final class BulletinAdapter: NSObject {
         return "\(appName): \(title)"
     }
 
-    /// The composed message. The subtitle is only included when the bulletin
-    /// says it is being shown.
+    /// The composed message: the subtitle is prepended as its own line only
+    /// when the bulletin says it is being shown, and the message body is
+    /// **always** included.
+    ///
+    /// This mirrors the original ObjC
+    /// `displayMessageForSubtitle:message:showsSubtitle:`. The Swift rewrite
+    /// inverted it into `guard !head.isEmpty else { return head }`, which
+    /// returned an empty string whenever there was no subtitle — silently
+    /// dropping the body. An iOS 17 bulletin hits exactly that: its request
+    /// layer keeps the title but not the subtitle, so `head` is empty and the
+    /// message recovered by the fallback chain was thrown away right here.
     static func displayMessage(subtitle: String?, message: String?, showsSubtitle: Bool) -> String {
-        let head = showsSubtitle ? (subtitle ?? "") : ""
-        guard !head.isEmpty, let message, !message.isEmpty else { return head }
-        return "\(head)\n\(message)"
+        let head = (showsSubtitle && !(subtitle ?? "").isEmpty) ? (subtitle ?? "") : ""
+        let body = message ?? ""
+        if head.isEmpty { return body }
+        if body.isEmpty { return head }
+        return "\(head)\n\(body)"
     }
 
     /// Resolves an app icon through SpringBoard's icon model.
