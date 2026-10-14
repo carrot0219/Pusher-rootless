@@ -1,4 +1,5 @@
 import Foundation
+import ObjectiveC
 import UIKit
 
 /// SpringBoard objects are reached through ``Runtime`` message sends, not by
@@ -219,6 +220,62 @@ public final class BulletinAdapter: NSObject {
             return bulletin.showsSubtitle
         }
         return Runtime.sendBool(inner, "showsSubtitle")
+    }
+
+    // MARK: - TEMP DIAGNOSTIC (remove once the iOS 17 body loss is located)
+
+    /// Dumps the real structure of a bulletin so the property that actually
+    /// holds the body on iOS 17 can be read off the on-device log. Walks the
+    /// class hierarchy and reports every non-empty `NSString` property of the
+    /// request object, its `content`, and its wrapped inner `bulletin` — so the
+    /// body's true key shows up by name instead of by guesswork.
+    public static func diagnose(_ bulletin: BBBulletin) -> String {
+        var lines: [String] = ["root=\(NSStringFromClass(type(of: bulletin)))"]
+        appendStringProperties(bulletin, tag: "root", into: &lines)
+
+        if let content = Runtime.send(bulletin, "content") {
+            lines.append("content=\(NSStringFromClass(type(of: content)))")
+            appendStringProperties(content, tag: "content", into: &lines)
+        } else {
+            lines.append("content=nil")
+        }
+
+        if let inner = Runtime.send(bulletin, "bulletin") {
+            lines.append("inner=\(NSStringFromClass(type(of: inner)))")
+            appendStringProperties(inner, tag: "inner", into: &lines)
+            if let innerContent = Runtime.send(inner, "content") {
+                lines.append("inner.content=\(NSStringFromClass(type(of: innerContent)))")
+                appendStringProperties(innerContent, tag: "inner.content", into: &lines)
+            }
+        } else {
+            lines.append("inner=nil")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Reports every non-empty string property declared anywhere in the
+    /// object's class hierarchy. Only `T@`-typed (object) properties are read,
+    /// so a scalar getter is never called through an object-returning IMP.
+    private static func appendStringProperties(
+        _ object: AnyObject, tag: String, into lines: inout [String]
+    ) {
+        var cls: AnyClass? = object_getClass(object)
+        while let current = cls, current != NSObject.self {
+            var count: UInt32 = 0
+            if let props = class_copyPropertyList(current, &count) {
+                for index in 0..<Int(count) {
+                    guard let attrs = property_getAttributes(props[index]),
+                          String(cString: attrs).hasPrefix("T@") else { continue }
+                    let name = String(cString: property_getName(props[index]))
+                    guard let value = Runtime.send(object, name) as? String,
+                          !value.isEmpty else { continue }
+                    let shown = value.count > 120 ? String(value.prefix(120)) + "…" : value
+                    lines.append("\(tag).\(name)=\(shown)")
+                }
+                free(props)
+            }
+            cls = class_getSuperclass(current)
+        }
     }
 
     /// Reduces a `BBSectionInfo` to the filter's value type.
