@@ -81,14 +81,6 @@ public final class PushEngine: NSObject {
 
         let context = BulletinAdapter.context(for: bulletin)
 
-        // ⚠️ TEMP DIAGNOSTIC — remove once the iOS 17 body loss is located.
-        // Dumps every non-empty string property the bulletin (and its content /
-        // inner bulletin) actually carries, to the global log section, so it
-        // shows up on the in-app log page and reveals where the body lives.
-        PushLog.add(service: "", context: context,
-                    label: "DIAG bulletin structure",
-                    object: BulletinAdapter.diagnose(bulletin), dontTruncate: true)
-
         // A bulletin SpringBoard never presented (no lastInterruptDate) is a
         // queued bulletin being replayed, e.g. right after a SpringBoard
         // restart.
